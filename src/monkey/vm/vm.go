@@ -71,6 +71,17 @@ func (vm *VM) Run() error {
 			if err != nil {
 				return err
 			}
+		case code.OpMinus:
+			err := vm.executeMinusOperator()
+			if err != nil {
+				return err
+			}
+		case code.OpBang:
+			err := vm.executeBangOperator()
+			if err != nil {
+				return err
+			}
+
 		}
 
 	}
@@ -95,6 +106,18 @@ func (vm *VM) pop() object.Object {
 
 func (vm *VM) LastPoppedStackElm() object.Object {
 	return vm.stack[vm.sp]
+}
+
+func (vm *VM) executeBangOperator() error {
+	operand := vm.pop()
+	switch operand {
+	case True:
+		return vm.push(False)
+	case False:
+		return vm.push(True)
+	default:
+		return vm.push(False)
+	}
 }
 
 func (vm *VM) executeBinaryOperation(op code.Opcode) error {
@@ -144,7 +167,7 @@ func (vm *VM) executeComparision(op code.Opcode) error {
 	default:
 		return fmt.Errorf("unknown bool comparision operator %d", op)
 	}
-	return vm.push(&object.Boolean{Value: result})
+	return vm.push(nativeBoolToBooleanObject(result))
 }
 
 func (vm *VM) executeIntegerComparision(op code.Opcode, left, right object.Object) error {
@@ -162,6 +185,16 @@ func (vm *VM) executeIntegerComparision(op code.Opcode, left, right object.Objec
 		return fmt.Errorf("unknown integer comparision operator%d", op)
 	}
 	return vm.push(nativeBoolToBooleanObject(result))
+}
+
+func (vm *VM) executeMinusOperator() error {
+	operand := vm.pop()
+	if operand.Type() != object.INTEGER_OBJ {
+		return fmt.Errorf("unsupported types for minus operation %s", operand.Type())
+	}
+	val := operand.(*object.Integer).Value
+	vm.push(&object.Integer{Value: -val})
+	return nil
 }
 
 func nativeBoolToBooleanObject(input bool) *object.Boolean {
