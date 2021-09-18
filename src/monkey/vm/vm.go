@@ -49,6 +49,13 @@ func (vm *VM) Run() error {
 	for ip := 0; ip < len(vm.instrctions); ip++ {
 		op := code.Opcode(vm.instrctions[ip])
 		switch op {
+		case code.OpArray:
+			numElements := int(code.ReadUint16(vm.instrctions[ip+1:]))
+			ip += 2
+			// e.g. vm.sp =3, numElements = 3
+			// startIndex = 3, endIndex=0
+			array := vm.buildArray(vm.sp-numElements, vm.sp)
+			vm.push(array)
 		case code.OpConstant:
 			// Why do we use slice for argument?
 			//const index is 2byte, so use ReadUint16(this func read 2byte).
@@ -127,6 +134,18 @@ func (vm *VM) Run() error {
 
 	}
 	return nil
+}
+
+func (vm *VM) buildArray(startIndex, endIndex int) object.Object {
+	// e.g. vm.sp = 3, numElements = 3
+	// startIndex = 0, endIndex = 3
+	// make( ~ , 3)
+	elements := make([]object.Object, endIndex-startIndex)
+	for i:=startIndex;i<endIndex;i++{
+		// we load bottom of stack(i)
+		elements[i-startIndex] = vm.stack[i]
+	}
+	return &object.Array{Elements: elements}
 }
 
 func isTruty(obj object.Object) bool {

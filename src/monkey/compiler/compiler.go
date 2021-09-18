@@ -39,7 +39,14 @@ func NewWithState(s *SymbolTable, constants []object.Object) *Compiler {
 
 func (c *Compiler) Compile(node ast.Node) error {
 	switch node := node.(type) {
-
+	case *ast.ArrayLiteral:
+		for _, e := range node.Elements {
+			err := c.Compile(e)
+			if err != nil {
+				return nil
+			}
+		}
+		c.emit(code.OpArray, len(node.Elements))
 	case *ast.BlockStatement:
 		// Block is consititute of slice of Statements.
 		for _, s := range node.Statements {
