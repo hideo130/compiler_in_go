@@ -119,7 +119,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 			c.emit(code.OpNotEqual)
 		default:
 			// fmt.Print(node)
-			return fmt.Errorf("unknowsn operator %s", node.String())
+			return fmt.Errorf("unknown operator %s", node.String())
 		}
 	case *ast.IntegerLiteral:
 		integer := &object.Integer{Value: node.Value}
@@ -170,6 +170,9 @@ func (c *Compiler) Compile(node ast.Node) error {
 		}
 		symbol := c.symbolTable.Define(node.Name.Value)
 		c.emit(code.OpSetGlobal, symbol.Index)
+	case *ast.StringLiteral:
+		str := &object.String{Value: node.Value}
+		c.emit(code.OpConstant, c.addConstant(str))
 	}
 
 	return nil
@@ -191,6 +194,8 @@ func (c *Compiler) addConstant(obj object.Object) int {
 	c.constants = append(c.constants, obj)
 	// We append obj, I think we should do len + 1, but we not.
 	// Why we substract length?
+	// Return integer indicates index of constans which contains obj.
+	// constans array is 0-index so substruct 1.
 	return len(c.constants) - 1
 }
 
