@@ -18,6 +18,7 @@ type VM struct {
 
 var True = &object.Boolean{Value: true}
 var False = &object.Boolean{Value: false}
+var Null = &object.Null{}
 
 func New(bytecode *compiler.Bytecode) *VM {
 	return &VM{
@@ -41,6 +42,7 @@ func (vm *VM) Run() error {
 		switch op {
 		case code.OpConstant:
 			// Why do we use slice for argument?
+			//const index is 2byte, so use ReadUint16(this func read 2byte).
 			constIndex := code.ReadUint16(vm.instrctions[ip+1:])
 			// Why do we add 2?
 			// vm.instrction[ip] is Opcode, OpConstant is 2 byte, so to point next Opcode we should add 2.
@@ -54,6 +56,11 @@ func (vm *VM) Run() error {
 		case code.OpAdd, code.OpDiv, code.OpMul, code.OpSub:
 			err := vm.executeBinaryOperation(op)
 			if err != nil {
+				return err
+			}
+		case code.OpNull:
+			err := vm.push(Null)
+			if err != nil{
 				return err
 			}
 		case code.OpTrue:
@@ -82,10 +89,35 @@ func (vm *VM) Run() error {
 				return err
 			}
 
+		case code.OpJump:
+			//jump index is 2byte, so use ReadUint16(this func read 2byte).
+			// ip point OpJump, to read index next point
+			pos := int(code.ReadUint16(vm.instrctions[ip+1:]))
+			// end for loop, ip is added 1, so we have to substruct 1.
+			ip = pos - 1
+		case code.OpJumpNotTruthy:
+			pos := int(code.ReadUint16(vm.instrctions[ip+1:]))
+			ip += 2
+			condition := vm.pop()
+			if !isTruty(condition){
+				ip = pos -1
+			}
 		}
 
 	}
 	return nil
+}
+
+func isTruty(obj object.Object) bool {
+	switch obj:=obj.(type) {
+	case *object.Boolean:
+		return obj.Value
+	case *object.Null:
+		return false
+	default:
+		// integer 0 is also true.
+		return true
+	}
 }
 
 func (vm *VM) push(o object.Object) error {
@@ -114,6 +146,8 @@ func (vm *VM) executeBangOperator() error {
 	case True:
 		return vm.push(False)
 	case False:
+		return vm.push(True)
+	case Null:
 		return vm.push(True)
 	default:
 		return vm.push(False)
