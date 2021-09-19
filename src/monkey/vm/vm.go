@@ -8,14 +8,16 @@ import (
 )
 
 const GlobalsSize = 65536
+const MaxFrames = 1024
 const StackSize = 2048
 
 type VM struct {
 	constants   []object.Object
 	globals     []object.Object
-	instrctions code.Instructions
 	stack       []object.Object
 	sp          int //Always points to the next value. Top of stack is stack[sp-1]
+	frames      []*Frame
+	framesIndex int
 }
 
 var True = &object.Boolean{Value: true}
@@ -23,12 +25,17 @@ var False = &object.Boolean{Value: false}
 var Null = &object.Null{}
 
 func New(bytecode *compiler.Bytecode) *VM {
+	mainFn := &object.CompiledFunction{Instructions: bytecode.Instructions}
+	mainFrame := NewFrame(mainFn)
+	frames := make([]*Frame, MaxFrames)
+	frames[0] = mainFrame
 	return &VM{
-		instrctions: bytecode.Instructions,
 		globals:     make([]object.Object, GlobalsSize),
 		constants:   bytecode.Constans,
 		stack:       make([]object.Object, StackSize),
 		sp:          0,
+		frames:      frames,
+		framesIndex: 1,
 	}
 }
 
@@ -46,23 +53,36 @@ func (vm *VM) StackTop() object.Object {
 }
 
 func (vm *VM) Run() error {
-	for ip := 0; ip < len(vm.instrctions); ip++ {
-		op := code.Opcode(vm.instrctions[ip])
+	var ip int
+	var ins code.Instructions
+	var op code.Opcode
+	for vm.currentFrame().ip < len(vm.currentFrame().Instructions())-1 {
+		vm.currentFrame().ip++
+		ip = vm.currentFrame().ip
+		ins = vm.currentFrame().Instructions()
+		op = code.Opcode(ins[ip])
 		switch op {
 		case code.OpArray:
-			numElements := int(code.ReadUint16(vm.instrctions[ip+1:]))
-			ip += 2
+			numElements := int(code.ReadUint16(ins[ip+1:]))
+			vm.currentFrame().ip += 2
 			// e.g. vm.sp =3, numElements = 3
 			// startIndex = 3, endIndex=0
 			array := vm.buildArray(vm.sp-numElements, vm.sp)
 			vm.push(array)
+		case code.OpCall:
+			fn, ok := vm.stack[vm.sp-1].(*object.CompiledFunction)
+			if !ok {
+				return fmt.Errorf("calling non-function")
+			}
+			frame := NewFrame(fn)
+			vm.pushFrame(frame)
 		case code.OpConstant:
 			// Why do we use slice for argument?
 			//const index is 2byte, so use ReadUint16(this func read 2byte).
-			constIndex := code.ReadUint16(vm.instrctions[ip+1:])
+			constIndex := code.ReadUint16(ins[ip+1:])
 			// Why do we add 2?
 			// vm.instrction[ip] is Opcode, OpConstant is 2 byte, so to point next Opcode we should add 2.
-			ip += 2
+			vm.currentFrame().ip += 2
 			err := vm.push(vm.constants[constIndex])
 			if err != nil {
 				return err
@@ -108,31 +128,46 @@ func (vm *VM) Run() error {
 		case code.OpJump:
 			//jump index is 2byte, so use ReadUint16(this func read 2byte).
 			// ip point OpJump, to read index next point
-			pos := int(code.ReadUint16(vm.instrctions[ip+1:]))
+			pos := int(code.ReadUint16(ins[ip+1:]))
 			// end for loop, ip is added 1, so we have to substruct 1.
-			ip = pos - 1
+			vm.currentFrame().ip = pos - 1
 		case code.OpJumpNotTruthy:
-			pos := int(code.ReadUint16(vm.instrctions[ip+1:]))
-			ip += 2
+			pos := int(code.ReadUint16(ins[ip+1:]))
+			vm.currentFrame().ip += 2
 			condition := vm.pop()
 			if !isTruty(condition) {
-				ip = pos - 1
+				vm.currentFrame().ip = pos - 1
 			}
 		case code.OpGetGlobal:
 			//read index of
-			globalIndex := int(code.ReadUint16(vm.instrctions[ip+1:]))
-			ip += 2
+			globalIndex := int(code.ReadUint16(ins[ip+1:]))
+			vm.currentFrame().ip += 2
 			err := vm.push(vm.globals[globalIndex])
 			if err != nil {
 				return err
 			}
+		case code.OpReturn:
+			vm.pop()
+			vm.popFrame()
+			err := vm.push(Null)
+			if err != nil {
+				return err
+			}
+		case code.OpReturnValue:
+			returnValue := vm.pop()
+			vm.pop()
+			vm.popFrame()
+			err := vm.push(returnValue)
+			if err != nil {
+				return err
+			}
 		case code.OpSetGlobal:
-			globalIndex := int(code.ReadUint16(vm.instrctions[ip+1:]))
-			ip += 2
+			globalIndex := int(code.ReadUint16(ins[ip+1:]))
+			vm.currentFrame().ip += 2
 			vm.globals[globalIndex] = vm.pop()
 		case code.OpHash:
-			numElements := int(code.ReadUint16(vm.instrctions[ip+1:]))
-			ip += 2
+			numElements := int(code.ReadUint16(ins[ip+1:]))
+			vm.currentFrame().ip += 2
 			hash, err := vm.buildHash(vm.sp-numElements, vm.sp)
 			if err != nil {
 				return err
@@ -185,6 +220,10 @@ func (vm *VM) buildHash(startIndex, endIndex int) (object.Object, error) {
 	return &object.Hash{Pairs: hashedPairs}, nil
 }
 
+func (vm *VM) currentFrame() *Frame {
+	return vm.frames[vm.framesIndex-1]
+}
+
 func isTruty(obj object.Object) bool {
 	switch obj := obj.(type) {
 	case *object.Boolean:
@@ -207,10 +246,20 @@ func (vm *VM) push(o object.Object) error {
 	return nil
 }
 
+func (vm *VM) pushFrame(f *Frame) {
+	vm.frames[vm.framesIndex] = f
+	vm.framesIndex++
+}
+
 func (vm *VM) pop() object.Object {
 	o := vm.stack[vm.sp-1]
 	vm.sp--
 	return o
+}
+
+func (vm *VM) popFrame() *Frame {
+	vm.framesIndex--
+	return vm.frames[vm.framesIndex]
 }
 
 func (vm *VM) LastPoppedStackElm() object.Object {
@@ -302,14 +351,14 @@ func (vm *VM) executeComparision(op code.Opcode) error {
 	return vm.push(nativeBoolToBooleanObject(result))
 }
 
-func (vm *VM) executeHashIndex(hash, index object.Object)error{
+func (vm *VM) executeHashIndex(hash, index object.Object) error {
 	hashObject := hash.(*object.Hash)
 	key, ok := index.(object.Hashable)
-	if !ok{
+	if !ok {
 		return fmt.Errorf("unusable as hash key: %s", index.Type())
 	}
 	pair, ok := hashObject.Pairs[key.HashKey()]
-	if !ok{
+	if !ok {
 		return vm.push(Null)
 	}
 	return vm.push(pair.Value)
