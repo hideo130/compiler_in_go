@@ -26,7 +26,7 @@ var Null = &object.Null{}
 
 func New(bytecode *compiler.Bytecode) *VM {
 	mainFn := &object.CompiledFunction{Instructions: bytecode.Instructions}
-	mainFrame := NewFrame(mainFn)
+	mainFrame := NewFrame(mainFn, 0)
 	frames := make([]*Frame, MaxFrames)
 	frames[0] = mainFrame
 	return &VM{
@@ -70,12 +70,12 @@ func (vm *VM) Run() error {
 			array := vm.buildArray(vm.sp-numElements, vm.sp)
 			vm.push(array)
 		case code.OpCall:
-			fn, ok := vm.stack[vm.sp-1].(*object.CompiledFunction)
-			if !ok {
-				return fmt.Errorf("calling non-function")
+			args := int(ins[ip+1])
+			vm.currentFrame().ip++
+			err := vm.callFunction(args)
+			if err != nil {
+				return err
 			}
-			frame := NewFrame(fn)
-			vm.pushFrame(frame)
 		case code.OpConstant:
 			// Why do we use slice for argument?
 			//const index is 2byte, so use ReadUint16(this func read 2byte).
@@ -146,17 +146,25 @@ func (vm *VM) Run() error {
 			if err != nil {
 				return err
 			}
+		case code.OpGetLocal:
+			localIndex := int(ins[ip+1])
+			vm.currentFrame().ip++
+			frame := vm.currentFrame()
+			err := vm.push(vm.stack[frame.basePointer+localIndex])
+			if err != nil {
+				return err
+			}
 		case code.OpReturn:
-			vm.pop()
-			vm.popFrame()
+			frame := vm.popFrame()
+			vm.sp = frame.basePointer - 1
 			err := vm.push(Null)
 			if err != nil {
 				return err
 			}
 		case code.OpReturnValue:
 			returnValue := vm.pop()
-			vm.pop()
-			vm.popFrame()
+			frame := vm.popFrame()
+			vm.sp = frame.basePointer - 1
 			err := vm.push(returnValue)
 			if err != nil {
 				return err
@@ -165,6 +173,11 @@ func (vm *VM) Run() error {
 			globalIndex := int(code.ReadUint16(ins[ip+1:]))
 			vm.currentFrame().ip += 2
 			vm.globals[globalIndex] = vm.pop()
+		case code.OpSetLocal:
+			localIndex := int(ins[ip+1])
+			vm.currentFrame().ip++
+			frame := vm.currentFrame()
+			vm.stack[frame.basePointer+int(localIndex)] = vm.pop()
 		case code.OpHash:
 			numElements := int(code.ReadUint16(ins[ip+1:]))
 			vm.currentFrame().ip += 2
@@ -218,6 +231,23 @@ func (vm *VM) buildHash(startIndex, endIndex int) (object.Object, error) {
 		hashedPairs[hashKey.HashKey()] = pair
 	}
 	return &object.Hash{Pairs: hashedPairs}, nil
+}
+
+func (vm *VM) callFunction(numArgs int) error {
+	fn, ok := vm.stack[vm.sp-1-numArgs].(*object.CompiledFunction)
+
+	if !ok {
+		return fmt.Errorf("calling non-function")
+	}
+
+	if fn.NumParameters != numArgs {
+		return fmt.Errorf("wrong number of arguments: want=%d, got=%d", fn.NumParameters, numArgs)
+	}
+
+	frame := NewFrame(fn, vm.sp-numArgs)
+	vm.pushFrame(frame)
+	vm.sp = frame.basePointer + fn.NumLocals
+	return nil
 }
 
 func (vm *VM) currentFrame() *Frame {
