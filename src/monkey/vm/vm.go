@@ -72,7 +72,7 @@ func (vm *VM) Run() error {
 		case code.OpCall:
 			args := int(ins[ip+1])
 			vm.currentFrame().ip++
-			err := vm.callFunction(args)
+			err := vm.executeCall(args)
 			if err != nil {
 				return err
 			}
@@ -124,7 +124,12 @@ func (vm *VM) Run() error {
 			if err != nil {
 				return err
 			}
-
+		case code.OpGetBuiltin:
+			builtinIndex := int(ins[ip+1])
+			vm.currentFrame().ip++
+			// vm.executeBuiltinOperation(builtinIndex)
+			definition := object.Builtins[builtinIndex]
+			vm.push(definition.Builtin)
 		case code.OpJump:
 			//jump index is 2byte, so use ReadUint16(this func read 2byte).
 			// ip point OpJump, to read index next point
@@ -213,6 +218,9 @@ func (vm *VM) buildArray(startIndex, endIndex int) object.Object {
 		// we load bottom of stack(i)
 		elements[i-startIndex] = vm.stack[i]
 	}
+	// remove original array elements.
+	vm.sp = startIndex
+
 	return &object.Array{Elements: elements}
 }
 
@@ -233,13 +241,20 @@ func (vm *VM) buildHash(startIndex, endIndex int) (object.Object, error) {
 	return &object.Hash{Pairs: hashedPairs}, nil
 }
 
-func (vm *VM) callFunction(numArgs int) error {
-	fn, ok := vm.stack[vm.sp-1-numArgs].(*object.CompiledFunction)
+func (vm *VM) callBuiltin(builtin *object.Builtin, numArgs int) error {
+	args := vm.stack[vm.sp-numArgs : vm.sp]
+	result := builtin.Fn(args...)
+	vm.sp = vm.sp - numArgs - 1
 
-	if !ok {
-		return fmt.Errorf("calling non-function")
+	if result != nil {
+		vm.push(result)
+	} else {
+		vm.push(Null)
 	}
+	return nil
+}
 
+func (vm *VM) callFunction(fn *object.CompiledFunction, numArgs int) error {
 	if fn.NumParameters != numArgs {
 		return fmt.Errorf("wrong number of arguments: want=%d, got=%d", fn.NumParameters, numArgs)
 	}
@@ -360,6 +375,18 @@ func (vm *VM) executeBinaryStringOperation(op code.Opcode, left, right object.Ob
 		return vm.push(&object.String{Value: leftValue + rightValue})
 	}
 	return fmt.Errorf("unknown string operator%d", op)
+}
+
+func (vm *VM) executeCall(numArgs int) error {
+	switch callee := vm.stack[vm.sp-1-numArgs].(type) {
+	case *object.CompiledFunction:
+		return vm.callFunction(callee, numArgs)
+	case *object.Builtin:
+		return vm.callBuiltin(callee, numArgs)
+	default:
+		return fmt.Errorf("calling non-function")
+	}
+
 }
 
 func (vm *VM) executeComparision(op code.Opcode) error {
