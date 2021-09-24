@@ -26,7 +26,8 @@ var Null = &object.Null{}
 
 func New(bytecode *compiler.Bytecode) *VM {
 	mainFn := &object.CompiledFunction{Instructions: bytecode.Instructions}
-	mainFrame := NewFrame(mainFn, 0)
+	mainClosure := &object.Closure{Fn: mainFn}
+	mainFrame := NewFrame(mainClosure, 0)
 	frames := make([]*Frame, MaxFrames)
 	frames[0] = mainFrame
 	return &VM{
@@ -130,6 +131,14 @@ func (vm *VM) Run() error {
 			// vm.executeBuiltinOperation(builtinIndex)
 			definition := object.Builtins[builtinIndex]
 			vm.push(definition.Builtin)
+		case code.OpGetFree:
+			freeIndex := int(ins[ip+1])
+			vm.currentFrame().ip++
+			currentClosure := vm.currentFrame().cl
+			err := vm.push(currentClosure.Free[freeIndex])
+			if err != nil {
+				return err
+			}
 		case code.OpJump:
 			//jump index is 2byte, so use ReadUint16(this func read 2byte).
 			// ip point OpJump, to read index next point
@@ -202,7 +211,21 @@ func (vm *VM) Run() error {
 			if err != nil {
 				return err
 			}
-
+		case code.OpClosure:
+			constIndex := int(code.ReadUint16(ins[ip+1:]))
+			numFreeVar := int(ins[ip+3])
+			vm.currentFrame().ip += 3
+			err := vm.pushClosure(constIndex, numFreeVar)
+			if err != nil {
+				return err
+			}
+		case code.OpCurrentClosure:
+			// I don't understand...
+			currentClosure := vm.currentFrame().cl
+			err := vm.push(currentClosure)
+			if err != nil {
+				return err
+			}
 		}
 
 	}
@@ -254,14 +277,14 @@ func (vm *VM) callBuiltin(builtin *object.Builtin, numArgs int) error {
 	return nil
 }
 
-func (vm *VM) callFunction(fn *object.CompiledFunction, numArgs int) error {
-	if fn.NumParameters != numArgs {
-		return fmt.Errorf("wrong number of arguments: want=%d, got=%d", fn.NumParameters, numArgs)
+func (vm *VM) callClosure(cl *object.Closure, numArgs int) error {
+	if cl.Fn.NumParameters != numArgs {
+		return fmt.Errorf("wrong number of arguments: want=%d, got=%d", cl.Fn.NumParameters, numArgs)
 	}
 
-	frame := NewFrame(fn, vm.sp-numArgs)
+	frame := NewFrame(cl, vm.sp-numArgs)
 	vm.pushFrame(frame)
-	vm.sp = frame.basePointer + fn.NumLocals
+	vm.sp = frame.basePointer + cl.Fn.NumLocals
 	return nil
 }
 
@@ -289,6 +312,22 @@ func (vm *VM) push(o object.Object) error {
 	vm.stack[vm.sp] = o
 	vm.sp++
 	return nil
+}
+
+func (vm *VM) pushClosure(constIndex, numFreeVar int) error {
+	constant := vm.constants[constIndex]
+	function, ok := constant.(*object.CompiledFunction)
+	if !ok {
+		return fmt.Errorf("not a function: %+v", constant)
+	}
+	free := make([]object.Object, numFreeVar)
+	for i := 0; i < numFreeVar; i++ {
+		free[i] = vm.stack[vm.sp-numFreeVar+i]
+	}
+	closure := &object.Closure{Fn: function, Free: free}
+	vm.sp = vm.sp - numFreeVar
+
+	return vm.push(closure)
 }
 
 func (vm *VM) pushFrame(f *Frame) {
@@ -379,8 +418,8 @@ func (vm *VM) executeBinaryStringOperation(op code.Opcode, left, right object.Ob
 
 func (vm *VM) executeCall(numArgs int) error {
 	switch callee := vm.stack[vm.sp-1-numArgs].(type) {
-	case *object.CompiledFunction:
-		return vm.callFunction(callee, numArgs)
+	case *object.Closure:
+		return vm.callClosure(callee, numArgs)
 	case *object.Builtin:
 		return vm.callBuiltin(callee, numArgs)
 	default:

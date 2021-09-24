@@ -43,6 +43,20 @@ func TestDefine(t *testing.T) {
 
 }
 
+func TestDefineAndResolveFunctionName(t *testing.T) {
+	global := NewSymbolTable()
+	global.DefineFunctionName("a")
+
+	expected := Symbol{Name: "a", Scope: FunctionScope, Index: 0}
+	result, ok := global.Resolve(expected.Name)
+	if !ok {
+		t.Fatalf("function name %s not resolvable", expected.Name)
+	}
+	if result != expected {
+		t.Errorf("expected %s to resolve to %+v, got=%+v", expected.Name, expected, result)
+	}
+}
+
 func TestDefineResolveBuiltins(t *testing.T) {
 	global := NewSymbolTable()
 	firstLocal := NewEnclosedSymbolTable(global)
@@ -67,6 +81,89 @@ func TestDefineResolveBuiltins(t *testing.T) {
 			}
 			if result != sym {
 				t.Errorf("expected %s to resolve to %+v, got=%+v", sym.Name, sym, result)
+			}
+		}
+	}
+}
+
+func TestResolveFree(t *testing.T) {
+	/*
+		Turn Monkey code into a test by looking at it from the symbol table’s perspective.
+		let a = 1;
+		let b = 2;
+		let firstLocal = fn() {
+			let c = 3;
+			let d = 4;
+			a + b + c + d;
+			let secondLocal = fn() {
+			let e = 5;
+			let f = 6;
+			a + b + c + d + e + f;
+			};
+		};
+	*/
+
+	global := NewSymbolTable()
+	global.Define("a")
+	global.Define("b")
+	firstLocal := NewEnclosedSymbolTable(global)
+	firstLocal.Define("c")
+	firstLocal.Define("d")
+	secondLocal := NewEnclosedSymbolTable(firstLocal)
+	secondLocal.Define("e")
+	secondLocal.Define("f")
+	tests := []struct {
+		table               *SymbolTable
+		expectedSymbols     []Symbol
+		expectedFreeSymbols []Symbol
+	}{
+		{
+			firstLocal,
+			[]Symbol{
+				{Name: "a", Scope: GlobalScope, Index: 0},
+				{Name: "b", Scope: GlobalScope, Index: 1},
+				{Name: "c", Scope: LocalScope, Index: 0},
+				{Name: "d", Scope: LocalScope, Index: 1},
+			},
+			// We do not treat global scope as free symbol.
+			[]Symbol{},
+		},
+		{
+			secondLocal,
+			[]Symbol{
+				{Name: "a", Scope: GlobalScope, Index: 0},
+				{Name: "b", Scope: GlobalScope, Index: 1},
+				{Name: "c", Scope: FreeScope, Index: 0},
+				{Name: "d", Scope: FreeScope, Index: 1},
+				{Name: "e", Scope: LocalScope, Index: 0},
+				{Name: "f", Scope: LocalScope, Index: 1},
+			},
+			[]Symbol{
+				// Why do we push symbol which scope is LocalScope instead of FreeScope?
+				{Name: "c", Scope: LocalScope, Index: 0},
+				{Name: "d", Scope: LocalScope, Index: 1},
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, sym := range tt.expectedSymbols {
+			result, ok := tt.table.Resolve(sym.Name)
+			if !ok {
+				t.Errorf("name %s not resolvable", sym.Name)
+				continue
+			}
+			if result != sym {
+				t.Errorf("expected %s to resolve to %+v, got=%+v", sym.Name, sym, result)
+			}
+		}
+		if len(tt.table.FreeSymbols) != len(tt.expectedFreeSymbols) {
+			t.Errorf("wrong number of free symbols. got=%d, want=%d", len(tt.table.FreeSymbols), len(tt.expectedFreeSymbols))
+			continue
+		}
+		for i, sym := range tt.expectedFreeSymbols {
+			result := tt.table.FreeSymbols[i]
+			if result != sym {
+				t.Errorf("wrong free symbol. got=%+v, want=%+v", result, sym)
 			}
 		}
 	}
@@ -165,5 +262,27 @@ func TestResolveNestedLocal(t *testing.T) {
 				t.Errorf("expected %s to resolve to %+v, got=%+v", sym.Name, sym, result)
 			}
 		}
+	}
+}
+
+func TestShadowingFunctionName(t *testing.T) {
+	/* we employ that shadowing the current function’s name
+	like this
+	let foobar = fn() {
+		let foobar = 1;
+		foobar;
+	};
+	*/
+
+	global := NewSymbolTable()
+	global.DefineFunctionName("a")
+	global.Define("a")
+	expected := Symbol{Name: "a", Scope: GlobalScope, Index: 0}
+	result, ok := global.Resolve(expected.Name)
+	if !ok {
+		t.Fatalf("function name %s not resolvable", expected.Name)
+	}
+	if result != expected {
+		t.Errorf("expected %s to resolve to %+v, got=%+v", expected.Name, expected, result)
 	}
 }
